@@ -7,6 +7,8 @@
 use crate::ir::context::BindgenContext;
 use clang_sys::*;
 use std::cmp;
+use std::path::{Path, PathBuf};
+use tempfile::TempDir;
 
 use std::ffi::{CStr, CString};
 use std::fmt;
@@ -1822,12 +1824,17 @@ impl TranslationUnit {
     /// Parse a source file into a translation unit.
     pub(crate) fn parse(
         ix: &Index,
-        file: &str,
+        file: Option<&Path>,
         cmd_args: &[Box<str>],
         unsaved: &[UnsavedFile],
         opts: CXTranslationUnit_Flags,
     ) -> Option<TranslationUnit> {
-        let fname = CString::new(file).unwrap();
+        let fname = match file {
+            Some(file) => {
+                CString::new(file.as_os_str().as_encoded_bytes()).unwrap()
+            }
+            None => CString::new(&[]).unwrap(),
+        };
         let _c_args: Vec<CString> = cmd_args
             .iter()
             .map(|s| CString::new(s.as_bytes()).unwrap())
@@ -1879,8 +1886,8 @@ impl TranslationUnit {
     }
 
     /// Save a translation unit to the given file.
-    pub(crate) fn save(&mut self, file: &str) -> Result<(), CXSaveError> {
-        let Ok(file) = CString::new(file) else {
+    pub(crate) fn save(&mut self, file: &Path) -> Result<(), CXSaveError> {
+        let Ok(file) = CString::new(file.as_os_str().as_encoded_bytes()) else {
             return Err(CXSaveError_Unknown);
         };
         let ret = unsafe {
@@ -1913,9 +1920,10 @@ impl Drop for TranslationUnit {
 
 /// Translation unit used for macro fallback parsing
 pub(crate) struct FallbackTranslationUnit {
-    file_path: String,
-    header_path: String,
-    pch_path: String,
+    temp_dir: TempDir,
+    file_path: PathBuf,
+    header_path: PathBuf,
+    pch_path: PathBuf,
     idx: Box<Index>,
     tu: TranslationUnit,
 }
@@ -1929,9 +1937,10 @@ impl fmt::Debug for FallbackTranslationUnit {
 impl FallbackTranslationUnit {
     /// Create a new fallback translation unit
     pub(crate) fn new(
-        file: String,
-        header_path: String,
-        pch_path: String,
+        temp_dir: TempDir,
+        file: PathBuf,
+        header_path: PathBuf,
+        pch_path: PathBuf,
         c_args: &[Box<str>],
     ) -> Option<Self> {
         // Create empty file
@@ -1945,12 +1954,13 @@ impl FallbackTranslationUnit {
         let f_index = Box::new(Index::new(true, false));
         let f_translation_unit = TranslationUnit::parse(
             &f_index,
-            &file,
+            Some(&file),
             c_args,
             &[],
             CXTranslationUnit_None,
         )?;
         Some(FallbackTranslationUnit {
+            temp_dir,
             file_path: file,
             header_path,
             pch_path,
@@ -1985,14 +1995,6 @@ impl FallbackTranslationUnit {
         } else {
             Ok(())
         }
-    }
-}
-
-impl Drop for FallbackTranslationUnit {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.file_path);
-        let _ = std::fs::remove_file(&self.header_path);
-        let _ = std::fs::remove_file(&self.pch_path);
     }
 }
 
@@ -2036,9 +2038,9 @@ pub(crate) struct UnsavedFile {
 }
 
 impl UnsavedFile {
-    /// Construct a new unsaved file with the given `name` and `contents`.
-    pub(crate) fn new(name: &str, contents: &str) -> UnsavedFile {
-        let name = CString::new(name.as_bytes()).unwrap();
+    /// Construct a new unsaved file with the given `path` and `contents`.
+    pub(crate) fn new(path: &Path, contents: &str) -> UnsavedFile {
+        let name = CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
         let contents = CString::new(contents.as_bytes()).unwrap();
         let x = CXUnsavedFile {
             Filename: name.as_ptr(),

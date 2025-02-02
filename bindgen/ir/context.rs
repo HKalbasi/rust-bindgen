@@ -33,6 +33,7 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::mem;
 use std::path::Path;
+use tempfile::TempDir;
 
 /// An identifier for some kind of IR item.
 #[derive(Debug, Copy, Clone, Eq, PartialOrd, Ord, Hash)]
@@ -557,7 +558,7 @@ impl BindgenContext {
 
             clang::TranslationUnit::parse(
                 &index,
-                "",
+                None,
                 &options.clang_args,
                 input_unsaved_files,
                 parse_options,
@@ -2042,13 +2043,9 @@ If you encounter an error missing from this list, please file an issue or a PR!"
         &mut self,
     ) -> Option<&mut clang::FallbackTranslationUnit> {
         if self.fallback_tu.is_none() {
-            let file = format!(
-                "{}/.macro_eval.c",
-                match self.options().clang_macro_fallback_build_dir {
-                    Some(ref path) => path.as_os_str().to_str()?,
-                    None => ".",
-                }
-            );
+            let temp_dir = TempDir::new().unwrap();
+
+            let file = temp_dir.path().join(".macro_eval.c");
 
             let index = clang::Index::new(false, false);
 
@@ -2072,15 +2069,12 @@ If you encounter an error missing from this list, please file an issue or a PR!"
                 header_contents +=
                     format!("\n#include <{header_name}>").as_str();
             }
-            let header_to_precompile = format!(
-                "{}/{}",
-                match self.options().clang_macro_fallback_build_dir {
-                    Some(ref path) => path.as_os_str().to_str()?,
-                    None => ".",
-                },
-                header_names_to_compile.join("-") + "-precompile.h"
-            );
-            let pch = header_to_precompile.clone() + ".pch";
+            let header_to_precompile = temp_dir
+                .path()
+                .join(header_names_to_compile.join("-") + "-precompile.h");
+            let pch = temp_dir
+                .path()
+                .join(header_names_to_compile.join("-") + "-precompile.h.pch");
 
             let mut header_to_precompile_file = OpenOptions::new()
                 .create(true)
@@ -2110,7 +2104,7 @@ If you encounter an error missing from this list, please file an issue or a PR!"
             );
             let mut tu = clang::TranslationUnit::parse(
                 &index,
-                &header_to_precompile,
+                Some(&header_to_precompile),
                 &c_args,
                 &[],
                 clang_sys::CXTranslationUnit_ForSerialization,
@@ -2119,7 +2113,7 @@ If you encounter an error missing from this list, please file an issue or a PR!"
 
             let mut c_args = vec![
                 "-include-pch".to_string().into_boxed_str(),
-                pch.clone().into_boxed_str(),
+                pch.to_string_lossy().into_owned().into_boxed_str(),
             ];
             c_args.extend(
                 self.options
@@ -2133,6 +2127,7 @@ If you encounter an error missing from this list, please file an issue or a PR!"
                     .cloned(),
             );
             self.fallback_tu = Some(clang::FallbackTranslationUnit::new(
+                temp_dir,
                 file,
                 header_to_precompile,
                 pch,
